@@ -1,0 +1,112 @@
+# 08-hpa-vpa.yaml
+# HPA = HorizontalPodAutoscaler — adds/removes pod REPLICAS based on CPU/memory usage
+# VPA = VerticalPodAutoscaler — recommends/adjusts CPU and memory REQUESTS per pod
+#
+# WHY HPA on the API:
+#   - API is stateless → safe to run multiple identical copies
+#   - Under high load (many transfers), scale out to handle it
+#   - When load drops, scale back in to save resources
+#
+# WHY VPA on PostgreSQL:
+#   - Can't horizontally scale a single-primary PostgreSQL easily
+#   - VPA watches actual resource usage and recommends right-sized requests
+#   - Mode: "Off" = only recommendations, no automatic changes (safe for production DB)
+#
+# PREREQUISITE for HPA:
+#   metrics-server must be installed in your cluster:
+#   kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+#   For local clusters (kind/minikube), add --kubelet-insecure-tls:
+#   kubectl patch deployment metrics-server -n kube-system --type='json' \
+#     -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+#
+# PREREQUISITE for VPA:
+#   Install VPA from: https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler
+#   kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/master/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml
+#   kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/master/vertical-pod-autoscaler/deploy/vpa-rbac.yaml
+
+---
+# HPA: Auto-scale the Banking API
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: banking-api-hpa
+  namespace: banking
+  labels:
+    app: banking-api
+spec:
+  # Target: the banking-api Deployment
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: banking-api
+  
+  # Scale between 2 and 10 replicas
+  minReplicas: 2    # Never go below 2 (high availability)
+  maxReplicas: 10   # Never exceed 10 (cost control)
+  
+  metrics:
+    # Scale up when average CPU across all pods exceeds 70%
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70   # % of the CPU request (100m)
+    
+    # Also scale on memory (optional but realistic)
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  
+  # Scaling behavior — prevents thrashing (rapidly scaling up/down)
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300   # Wait 5 minutes before scaling down
+      policies:
+        - type: Pods
+          value: 1                      # Remove at most 1 pod per period
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 30    # Scale up faster (30s) — don't leave users waiting
+      policies:
+        - type: Pods
+          value: 2                      # Add at most 2 pods per period
+          periodSeconds: 30
+
+---
+# VPA: Right-size the PostgreSQL database pod
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: postgres-vpa
+  namespace: banking
+  labels:
+    app: postgres
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: postgres-db
+  
+  updatePolicy:
+    # "Off" = VPA only observes and recommends, doesn't automatically change anything
+    # WHY: Automatically restarting a database pod is risky. We review recommendations
+    # and update resource requests manually when safe.
+    # Other options: "Auto" (auto-applies), "Initial" (only applies on pod creation)
+    updateMode: "Off"
+  
+  resourcePolicy:
+    containerPolicies:
+      - containerName: postgres
+        # VPA will recommend values within these bounds
+        minAllowed:
+          cpu: "100m"
+          memory: "128Mi"
+        maxAllowed:
+          cpu: "2"
+          memory: "4Gi"
+        # Only adjust CPU and memory (not storage)
+        controlledResources: ["cpu", "memory"]

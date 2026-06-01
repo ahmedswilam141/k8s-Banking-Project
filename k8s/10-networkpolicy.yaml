@@ -1,0 +1,211 @@
+# 10-networkpolicy.yaml
+# WHY NetworkPolicies:
+#   By default, ALL pods in Kubernetes can talk to ALL other pods — even across namespaces.
+#   NetworkPolicy implements a firewall at the pod level.
+#   We use a "default deny all" approach, then EXPLICITLY allow only needed connections.
+#
+# THE 7 POLICIES:
+#   1. default-deny-all-ingress    — block all incoming traffic (baseline)
+#   2. default-deny-all-egress     — block all outgoing traffic (baseline)
+#   3. allow-api-to-postgres       — API can connect to PostgreSQL on port 5432
+#   4. allow-ingress-to-api        — Ingress controller can reach the API on port 3000
+#   5. allow-ingress-to-dashboard  — Ingress controller can reach Dashboard on port 80
+#   6. allow-api-egress-dns        — API can resolve DNS (needed for DB hostname lookup)
+#   7. allow-fluentd-egress        — Fluentd can send logs out (if using external logging)
+#
+# TESTING:
+#   After applying, test that dashboard CANNOT reach postgres:
+#   kubectl exec -it <dashboard-pod> -n banking -- sh
+#   wget -qO- postgres-service:5432   # Should fail/timeout — NetworkPolicy blocks this
+
+---
+# Policy 1: Default Deny All Ingress (incoming traffic to all pods)
+# WHY: Deny everything first, then allow only what we explicitly need
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all-ingress
+  namespace: banking
+  labels:
+    type: default-deny
+spec:
+  podSelector: {}    # Empty selector = applies to ALL pods in this namespace
+  policyTypes:
+    - Ingress
+  # No ingress rules = deny all incoming traffic
+
+---
+# Policy 2: Default Deny All Egress (outgoing traffic from all pods)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all-egress
+  namespace: banking
+  labels:
+    type: default-deny
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  # No egress rules = deny all outgoing traffic
+
+---
+# Policy 3: Allow API → PostgreSQL (port 5432)
+# WHY: The API needs to read/write from the database — this is the only allowed DB connection
+# The Dashboard CANNOT reach the DB (it's not allowed here)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-to-postgres
+  namespace: banking
+  labels:
+    type: allow
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres    # This policy PROTECTS the postgres pods
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: banking-api    # ONLY pods labeled app=banking-api can connect
+      ports:
+        - protocol: TCP
+          port: 5432
+
+---
+# Policy 4: Allow Ingress Controller → API (port 3000)
+# WHY: The nginx Ingress controller lives in a different namespace (ingress-nginx)
+#      and needs to reach the API pods to route /api/* requests
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-api
+  namespace: banking
+  labels:
+    type: allow
+spec:
+  podSelector:
+    matchLabels:
+      app: banking-api    # Protects the API pods
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Allow traffic from the ingress-nginx namespace
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        # Also allow internal health checks from same namespace
+        - podSelector:
+            matchLabels:
+              app: banking-dashboard
+      ports:
+        - protocol: TCP
+          port: 3000
+
+---
+# Policy 5: Allow Ingress Controller → Dashboard (port 80)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-dashboard
+  namespace: banking
+  labels:
+    type: allow
+spec:
+  podSelector:
+    matchLabels:
+      app: banking-dashboard    # Protects dashboard pods
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 80
+
+---
+# Policy 6: Allow API Egress → Database + DNS
+# WHY: Our deny-all-egress blocks everything.
+#      The API needs OUTBOUND connections to:
+#        a) PostgreSQL (to query the database)
+#        b) DNS server (to resolve "postgres-service" hostname)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-egress
+  namespace: banking
+  labels:
+    type: allow
+spec:
+  podSelector:
+    matchLabels:
+      app: banking-api    # Allows outbound traffic FROM the API pods
+  policyTypes:
+    - Egress
+  egress:
+    # Allow outbound to PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Allow DNS resolution (kube-dns runs on port 53)
+    # Without this, the API can't resolve "postgres-service.banking.svc.cluster.local"
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# Policy 7: Allow Fluentd to send logs (egress to external logging + node access)
+# WHY: Fluentd (DaemonSet) reads logs from nodes and can forward them externally.
+#      It needs outbound access to do this.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-fluentd-egress
+  namespace: banking
+  labels:
+    type: allow
+spec:
+  podSelector:
+    matchLabels:
+      app: fluentd    # Applies to Fluentd pods (from 11-daemonset-fluentd.yaml)
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow outbound HTTPS (for sending logs to external services like Elasticsearch, Datadog)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0    # Any external IP
+            except:
+              - 10.0.0.0/8     # But not internal cluster IPs
+              - 192.168.0.0/16
+              - 172.16.0.0/12
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 24224    # Fluentd's native forward port

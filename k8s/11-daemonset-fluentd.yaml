@@ -1,0 +1,93 @@
+# 11-daemonset-fluentd.yaml
+# WHY DaemonSet:
+#   A DaemonSet runs exactly ONE pod per node — automatically.
+#   When you add a node to the cluster, Kubernetes automatically schedules a Fluentd pod there.
+#   When a node is removed, its Fluentd pod is cleaned up automatically.
+#   This is perfect for log collection — every node's logs get captured.
+#
+# WHAT FLUENTD DOES:
+#   - Reads container logs from /var/log/containers/ on each node
+#   - Reads system logs from /var/log/ 
+#   - Can forward logs to Elasticsearch, Splunk, Datadog, stdout, etc.
+#   - In this project: outputs to stdout (visible via kubectl logs)
+#
+# SPECIAL REQUIREMENT: Fluentd must ALSO run on the database-only tainted node
+# WHY: Even the database node generates logs we need to collect
+# HOW: Add tolerations: [{operator: "Exists"}] — tolerate ANY taint
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-config
+  namespace: banking
+data:
+  fluent.conf: |
+    <source>
+      @type tail
+      path /var/log/containers/*banking*.log
+      pos_file /tmp/fluentd-banking.pos
+      tag banking.*
+      read_from_head false
+      <parse>
+        @type none
+      </parse>
+    </source>
+
+    <match banking.**>
+      @type stdout
+    </match>
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd
+  namespace: banking
+  labels:
+    app: fluentd
+    tier: logging
+spec:
+  selector:
+    matchLabels:
+      app: fluentd
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: fluentd
+        tier: logging
+    spec:
+      tolerations:
+        - operator: "Exists"
+      serviceAccountName: default
+      containers:
+        - name: fluentd
+          image: fluent/fluentd:v1.16-debian-1
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+            - name: fluentd-config
+              mountPath: /fluentd/etc/fluent.conf
+              subPath: fluent.conf
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: fluentd-config
+          configMap:
+            name: fluentd-config

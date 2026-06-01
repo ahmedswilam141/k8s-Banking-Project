@@ -1,0 +1,21 @@
+# 01-configmap.yaml
+# WHY: ConfigMaps store non-sensitive configuration outside of the container image.
+# If you change a config value, you update the ConfigMap — not rebuild the Docker image.
+# DB_HOST uses the Kubernetes DNS name of the PostgreSQL Service (defined in 06-services.yaml)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: banking-config
+  namespace: banking
+data:
+  # Database connection — uses internal Kubernetes DNS: <service-name>.<namespace>.svc.cluster.local
+  DB_HOST: "postgres-service.banking.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "bankingdb"
+  DB_USER: "bankuser"
+  # API settings
+  NODE_ENV: "production"
+  PORT: "3000"
+  LOG_LEVEL: "info"
+  # CORS — allows the dashboard (served via Ingress) to call the API
+  CORS_ORIGIN: "http://banking.local"

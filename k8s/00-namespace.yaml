@@ -1,0 +1,10 @@
+# 00-namespace.yaml
+# WHY: Namespaces isolate all banking resources from other workloads on the cluster.
+# Everything we deploy goes inside the "banking" namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: banking
+  labels:
+    name: banking
+    environment: production

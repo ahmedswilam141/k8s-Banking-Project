@@ -1,0 +1,69 @@
+# 06-services.yaml
+# WHY Services:
+#   Services provide stable network endpoints (IP + DNS name) for pods.
+#   Pods come and go (they're ephemeral), but the Service IP/name stays constant.
+#   Type ClusterIP = internal only (not accessible from outside the cluster).
+#
+# KUBERNETES DNS RULE:
+#   A service named "postgres-service" in namespace "banking" is accessible at:
+#   postgres-service.banking.svc.cluster.local (or just "postgres-service" from same namespace)
+---
+# Service 1: PostgreSQL Database
+# ONLY the API should reach this (enforced by NetworkPolicy in 10-networkpolicy.yaml)
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: banking
+  labels:
+    app: postgres
+    tier: database
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres       # Sends traffic to pods labeled app=postgres (our StatefulSet pods)
+  ports:
+    - name: postgres
+      port: 5432        # Port the Service listens on
+      targetPort: 5432  # Port the postgres container listens on
+
+---
+# Service 2: Banking API
+# Ingress sends /api/* traffic here. Dashboard also uses this via Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: banking-api-service
+  namespace: banking
+  labels:
+    app: banking-api
+    tier: backend
+spec:
+  type: ClusterIP
+  selector:
+    app: banking-api    # Routes to pods labeled app=banking-api
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      # WHY no NodePort: Ingress handles external access. ClusterIP is correct here.
+
+---
+# Service 3: Banking Dashboard
+# Ingress sends / traffic here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: banking-dashboard-service
+  namespace: banking
+  labels:
+    app: banking-dashboard
+    tier: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: banking-dashboard
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

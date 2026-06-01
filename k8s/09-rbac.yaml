@@ -1,0 +1,152 @@
+# 09-rbac.yaml
+# RBAC = Role-Based Access Control
+# WHY: By default, pods have no permissions to call the Kubernetes API.
+# RBAC gives specific identities specific permissions — least privilege principle.
+#
+# THREE IDENTITIES:
+#   1. banking-api-sa     — the API pod's identity (can read configmaps/secrets it needs)
+#   2. banking-dashboard-sa — dashboard pod's identity (read-only, minimal permissions)  
+#   3. developer          — human developer account (can view pods but NOT delete them)
+#
+# HOW IT WORKS:
+#   ServiceAccount → RoleBinding → Role → Rules (which verbs on which resources)
+#   "This account (SA) is bound to this role, which allows these actions"
+
+---
+# ── SERVICE ACCOUNTS ───────────────────────────────────────────────────────
+# ServiceAccount 1: For the Banking API pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: banking-api-sa
+  namespace: banking
+  labels:
+    app: banking-api
+automountServiceAccountToken: false   # Security: don't auto-mount the token unless needed
+
+---
+# ServiceAccount 2: For the Dashboard pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: banking-dashboard-sa
+  namespace: banking
+  labels:
+    app: banking-dashboard
+automountServiceAccountToken: false
+
+---
+# ── ROLES ─────────────────────────────────────────────────────────────────
+# Role 1: Banking API Role — minimal permissions the API pod needs
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: banking-api-role
+  namespace: banking
+  labels:
+    app: banking-api
+rules:
+  # API pod needs to read its own ConfigMap and Secret
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+    resourceNames: ["banking-config"]   # Only THIS configmap, not all of them
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["banking-secrets"]  # Only THIS secret
+  # API pod can view its own service endpoints (useful for health checks)
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list"]
+
+---
+# Role 2: Dashboard Role — very minimal, read-only
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: banking-dashboard-role
+  namespace: banking
+  labels:
+    app: banking-dashboard
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+    resourceNames: ["banking-config"]
+
+---
+# Role 3: Developer Role — humans can VIEW but NOT modify/delete
+# This demonstrates least-privilege: devs can debug but can't break production
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: developer-role
+  namespace: banking
+rules:
+  # Can VIEW pods and their logs (for debugging)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status"]
+    verbs: ["get", "list", "watch"]
+  # Can view deployments and services (for understanding the system)
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list"]
+  # Can view events (for debugging issues)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # CANNOT: delete pods, exec into pods, modify deployments, access secrets
+
+---
+# ── ROLE BINDINGS ──────────────────────────────────────────────────────────
+# RoleBinding 1: Bind banking-api-sa to banking-api-role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: banking-api-rolebinding
+  namespace: banking
+subjects:
+  - kind: ServiceAccount
+    name: banking-api-sa
+    namespace: banking
+roleRef:
+  kind: Role
+  name: banking-api-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# RoleBinding 2: Bind banking-dashboard-sa to banking-dashboard-role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: banking-dashboard-rolebinding
+  namespace: banking
+subjects:
+  - kind: ServiceAccount
+    name: banking-dashboard-sa
+    namespace: banking
+roleRef:
+  kind: Role
+  name: banking-dashboard-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# RoleBinding 3: Bind the "developer" user to developer-role
+# This creates a human user named "developer" (referenced with --as in kubectl auth can-i)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: developer-rolebinding
+  namespace: banking
+subjects:
+  - kind: User
+    name: developer      # This is the username used with --as developer in kubectl
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: developer-role
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,151 @@
+# 04-api-deployment.yaml
+# WHY Deployment (not StatefulSet):
+#   - The API is stateless — any replica can handle any request
+#   - Deployments support rolling updates (zero-downtime deploys)
+#   - Easy to scale horizontally (just increase replicas)
+#
+# REPLACE: Change "yourdockerhubusername" to your actual Docker Hub username everywhere below
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: banking-api
+  namespace: banking
+  labels:
+    app: banking-api
+    tier: backend
+    version: v1.0
+spec:
+  replicas: 2    # 2 replicas = high availability (one can die, service keeps running)
+  
+  # Rolling update strategy — zero downtime deploys
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0    # Never have 0 healthy pods during deploy
+      maxSurge: 1          # Can temporarily have 3 pods (2 + 1 extra) during update
+
+  selector:
+    matchLabels:
+      app: banking-api
+
+  template:
+    metadata:
+      labels:
+        app: banking-api
+        tier: backend
+        version: v1.0
+
+    spec:
+      # ── SECURITY CONTEXT (pod level) ──────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      
+      # ── SERVICE ACCOUNT ────────────────────────────────────────────────
+      serviceAccountName: banking-api-sa   # Defined in 09-rbac.yaml
+      
+      # ── DOCKER HUB IMAGE PULL SECRET ──────────────────────────────────
+      imagePullSecrets:
+        - name: dockerhub-secret
+
+      # ── GRACEFUL SHUTDOWN ─────────────────────────────────────────────
+      # Give running requests 30s to complete before killing the pod
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: banking-api
+          image: ahmedswilam12/banking-api:v1.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+          
+          # ── ENVIRONMENT VARIABLES ──────────────────────────────────────
+          # From ConfigMap (non-sensitive config)
+          envFrom:
+            - configMapRef:
+                name: banking-config
+          # Sensitive values from Secret (overlay individual keys)
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: banking-secrets
+                  key: DB_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: banking-secrets
+                  key: JWT_SECRET
+          
+          # ── CONTAINER SECURITY ─────────────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          
+          # ── RESOURCE LIMITS ────────────────────────────────────────────
+          # requests: minimum guaranteed resources
+          # limits: maximum allowed (pod killed if exceeds memory limit)
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"     # 100 millicores = 0.1 CPU core
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          
+          # ── WRITABLE TEMP DIRECTORIES ──────────────────────────────────
+          # Required because readOnlyRootFilesystem: true
+          # Node.js needs /tmp for temp files
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: app-logs
+              mountPath: /app/logs
+          
+          # ── HEALTH PROBES (ALL THREE REQUIRED BY PROJECT) ─────────────
+          
+          # Startup Probe: Runs FIRST. Gives the app time to initialize.
+          # Other probes don't start until startupProbe succeeds.
+          # WHY: Prevents liveness probe from killing a slow-starting pod.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12    # 12 × 5s = 60s maximum startup window
+
+          # Readiness Probe: Is this pod READY to receive traffic?
+          # WHY: Only routes traffic to pods that can serve requests.
+          # /ready returns 200 only when DB connection is established.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+
+          # Liveness Probe: Is this pod ALIVE? Restart if not.
+          # WHY: Detects and recovers from hangs/deadlocks automatically.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+
+      # ── VOLUMES ─────────────────────────────────────────────────────────
+      volumes:
+        - name: tmp-volume
+          emptyDir: {}      # Lives only as long as the pod
+        - name: app-logs
+          emptyDir: {}

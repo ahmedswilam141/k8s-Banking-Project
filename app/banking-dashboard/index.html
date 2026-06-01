@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Banking Platform — K8s Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+
+    header {
+      background: #1e293b; border-bottom: 1px solid #334155;
+      padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between;
+    }
+    header h1 { font-size: 1.2rem; font-weight: 600; color: #38bdf8; }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+    .dot-green { background: #22c55e; }
+    .dot-red   { background: #ef4444; }
+
+    main { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+
+    .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 2rem; }
+    .stat-card {
+      background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem;
+    }
+    .stat-card .label { font-size: 0.8rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .5rem; }
+    .stat-card .value { font-size: 2rem; font-weight: 700; color: #38bdf8; }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+
+    .panel {
+      background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem;
+    }
+    .panel h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: #cbd5e1; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { text-align: left; padding: 8px 10px; font-size: 0.75rem; color: #64748b; border-bottom: 1px solid #334155; }
+    td { padding: 8px 10px; border-bottom: 1px solid #1e293b; color: #cbd5e1; }
+    tr:last-child td { border-bottom: none; }
+
+    .badge {
+      font-size: 0.7rem; padding: 2px 8px; border-radius: 999px; font-weight: 500;
+    }
+    .badge-green { background: #14532d; color: #86efac; }
+
+    form { display: flex; flex-direction: column; gap: .75rem; }
+    label { font-size: 0.8rem; color: #94a3b8; }
+    input, select {
+      width: 100%; background: #0f172a; border: 1px solid #334155;
+      border-radius: 8px; padding: 8px 12px; color: #e2e8f0; font-size: 0.875rem;
+    }
+    button {
+      background: #0ea5e9; color: #fff; border: none; border-radius: 8px;
+      padding: 10px; font-size: 0.875rem; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: #38bdf8; }
+    .error { color: #f87171; font-size: 0.8rem; margin-top: .25rem; }
+    .success { color: #86efac; font-size: 0.8rem; margin-top: .25rem; }
+    .refresh { font-size: 0.75rem; color: #64748b; margin-top: .5rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🏦 Banking Platform</h1>
+  <div id="api-status">
+    <span class="status-dot dot-red" id="status-dot"></span>
+    <span id="status-text" style="font-size:.85rem;color:#94a3b8">Checking API…</span>
+  </div>
+</header>
+
+<main>
+  <!-- Stats -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="label">Total Accounts</div>
+      <div class="value" id="stat-accounts">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Total Balance</div>
+      <div class="value" id="stat-balance">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Transactions</div>
+      <div class="value" id="stat-txns">—</div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <!-- Accounts table -->
+    <div class="panel">
+      <h2>Accounts</h2>
+      <table>
+        <thead><tr><th>ID</th><th>Owner</th><th>Balance</th></tr></thead>
+        <tbody id="accounts-tbody"><tr><td colspan="3" style="color:#64748b">Loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- Transactions table -->
+    <div class="panel">
+      <h2>Recent Transactions</h2>
+      <table>
+        <thead><tr><th>From</th><th>To</th><th>Amount</th><th>Status</th></tr></thead>
+        <tbody id="txns-tbody"><tr><td colspan="4" style="color:#64748b">Loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- New Account Form -->
+    <div class="panel">
+      <h2>Open Account</h2>
+      <form id="account-form">
+        <div><label>Owner Name</label><input type="text" id="owner" placeholder="e.g. Ahmed Mohamed" required /></div>
+        <div><label>Initial Balance (EGP)</label><input type="number" id="init-balance" value="1000" min="0" /></div>
+        <button type="submit">Open Account</button>
+        <div id="account-msg"></div>
+      </form>
+    </div>
+
+    <!-- Transfer Form -->
+    <div class="panel">
+      <h2>Transfer Money</h2>
+      <form id="txn-form">
+        <div><label>From Account ID</label><input type="number" id="from-id" placeholder="1" required /></div>
+        <div><label>To Account ID</label><input type="number" id="to-id" placeholder="2" required /></div>
+        <div><label>Amount (EGP)</label><input type="number" id="amount" placeholder="500" min="1" required /></div>
+        <div><label>Note (optional)</label><input type="text" id="note" placeholder="Rent payment" /></div>
+        <button type="submit">Transfer</button>
+        <div id="txn-msg"></div>
+      </form>
+    </div>
+  </div>
+
+  <p class="refresh" id="last-refresh">Auto-refreshes every 10 seconds</p>
+</main>
+
+<script>
+  // API base URL — reads from environment variable injected at build time
+  // In K8s: the dashboard calls /api/* which Ingress proxies to the API service
+  const API = window.location.origin;
+
+  const fmt = (n) => new Intl.NumberFormat('en-EG', { style: 'currency', currency: 'EGP' }).format(n);
+
+  async function checkHealth() {
+    try {
+      const r = await fetch(`${API}/api/stats`);
+      const dot = document.getElementById('status-dot');
+      const txt = document.getElementById('status-text');
+      if (r.ok) {
+        dot.className = 'status-dot dot-green';
+        txt.textContent = 'API Connected';
+      } else { throw new Error(); }
+    } catch {
+      document.getElementById('status-dot').className = 'status-dot dot-red';
+      document.getElementById('status-text').textContent = 'API Unreachable';
+    }
+  }
+
+  async function loadStats() {
+    try {
+      const r = await fetch(`${API}/api/stats`);
+      const d = await r.json();
+      document.getElementById('stat-accounts').textContent = d.total_accounts;
+      document.getElementById('stat-balance').textContent = fmt(d.total_balance);
+      document.getElementById('stat-txns').textContent = d.total_transactions;
+    } catch {}
+  }
+
+  async function loadAccounts() {
+    try {
+      const r = await fetch(`${API}/api/accounts`);
+      const rows = await r.json();
+      document.getElementById('accounts-tbody').innerHTML = rows.map(a =>
+        `<tr><td>${a.id}</td><td>${a.owner}</td><td>${fmt(a.balance)}</td></tr>`
+      ).join('') || '<tr><td colspan="3" style="color:#64748b">No accounts yet</td></tr>';
+    } catch {}
+  }
+
+  async function loadTransactions() {
+    try {
+      const r = await fetch(`${API}/api/transactions`);
+      const rows = await r.json();
+      document.getElementById('txns-tbody').innerHTML = rows.map(t =>
+        `<tr><td>${t.from_owner}</td><td>${t.to_owner}</td><td>${fmt(t.amount)}</td>
+         <td><span class="badge badge-green">${t.status}</span></td></tr>`
+      ).join('') || '<tr><td colspan="4" style="color:#64748b">No transactions yet</td></tr>';
+    } catch {}
+  }
+
+  async function refresh() {
+    await Promise.all([checkHealth(), loadStats(), loadAccounts(), loadTransactions()]);
+    document.getElementById('last-refresh').textContent =
+      `Last refreshed: ${new Date().toLocaleTimeString()}`;
+  }
+
+  document.getElementById('account-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById('account-msg');
+    try {
+      const r = await fetch(`${API}/api/accounts`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner: document.getElementById('owner').value,
+                               initial_balance: parseFloat(document.getElementById('init-balance').value) })
+      });
+      const d = await r.json();
+      if (r.ok) {
+        msg.className = 'success'; msg.textContent = `Account #${d.id} created for ${d.owner}`;
+        e.target.reset(); refresh();
+      } else { msg.className = 'error'; msg.textContent = d.error; }
+    } catch(err) { msg.className = 'error'; msg.textContent = err.message; }
+  });
+
+  document.getElementById('txn-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById('txn-msg');
+    try {
+      const r = await fetch(`${API}/api/transactions`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_account: parseInt(document.getElementById('from-id').value),
+          to_account:   parseInt(document.getElementById('to-id').value),
+          amount:       parseFloat(document.getElementById('amount').value),
+          note:         document.getElementById('note').value || null,
+        })
+      });
+      const d = await r.json();
+      if (r.ok) {
+        msg.className = 'success'; msg.textContent = `Transfer of ${fmt(d.amount)} completed!`;
+        e.target.reset(); refresh();
+      } else { msg.className = 'error'; msg.textContent = d.error; }
+    } catch(err) { msg.className = 'error'; msg.textContent = err.message; }
+  });
+
+  refresh();
+  setInterval(refresh, 10000);
+</script>
+</body>
+</html>

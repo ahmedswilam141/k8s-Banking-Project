@@ -1,0 +1,116 @@
+# 05-dashboard-deployment.yaml
+# WHY: Separate Deployment from the API — correct microservices pattern.
+# The Dashboard (nginx) just serves static HTML/JS files.
+# It does NOT directly talk to the database — all data comes via the API through Ingress.
+#
+# REPLACE: Change "yourdockerhubusername" to your actual Docker Hub username
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: banking-dashboard
+  namespace: banking
+  labels:
+    app: banking-dashboard
+    tier: frontend
+    version: v1.0
+spec:
+  replicas: 1    # Only 1 replica needed — nginx is very lightweight
+  
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  selector:
+    matchLabels:
+      app: banking-dashboard
+
+  template:
+    metadata:
+      labels:
+        app: banking-dashboard
+        tier: frontend
+        version: v1.0
+
+    spec:
+      # ── SECURITY CONTEXT ───────────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101      # nginx user (nginx:alpine default)
+        runAsGroup: 101
+        fsGroup: 101
+      
+      # ── SERVICE ACCOUNT ────────────────────────────────────────────────
+      serviceAccountName: banking-dashboard-sa   # Defined in 09-rbac.yaml
+      
+      imagePullSecrets:
+        - name: dockerhub-secret
+
+      containers:
+        - name: banking-dashboard
+          image: ahmedswilam12/banking-dashboard:v1.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              name: http
+          
+          # ── CONTAINER SECURITY ─────────────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          # ── RESOURCE LIMITS ────────────────────────────────────────────
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+
+          # ── NGINX NEEDS WRITABLE DIRECTORIES ───────────────────────────
+          # nginx writes PID file and temp files — these go to emptyDir
+          volumeMounts:
+            - name: nginx-tmp
+              mountPath: /tmp
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-pid
+              mountPath: /var/run
+
+          # ── HEALTH PROBES ──────────────────────────────────────────────
+          startupProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+
+      volumes:
+        - name: nginx-tmp
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-pid
+          emptyDir: {}
